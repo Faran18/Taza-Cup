@@ -3,7 +3,8 @@
 import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Check, Minus, Plus, ReceiptText } from "lucide-react";
-import { products, formatPrice } from "@/lib/products";
+import { products, formatPrice, MIN_CUPS_PER_ORDER } from "@/lib/products";
+import { stepQuantity } from "@/lib/order-utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -37,7 +38,8 @@ function OrdersPageContent() {
     name: "",
     email: "",
     phone: "",
-    pickup: "",
+    address: "",
+    deliveryTime: "",
   });
   const [orderNumber, setOrderNumber] = useState("");
 
@@ -55,17 +57,24 @@ function OrdersPageContent() {
     () => products.filter((p) => (qty[p.id] ?? 0) > 0),
     [qty],
   );
+  const totalCups = selected.reduce((sum, p) => sum + (qty[p.id] ?? 0), 0);
   const subtotal = selected.reduce(
     (sum, p) => sum + p.price * (qty[p.id] ?? 0),
     0,
   );
   const tax = subtotal * 0.08;
 
-  const update = (id: string, amount: number) =>
+  const minimumMet = totalCups >= MIN_CUPS_PER_ORDER;
+  const canContinue = selected.length > 0 && minimumMet;
+
+  const update = (id: string, direction: 1 | -1) => {
+    const product = products.find((p) => p.id === id);
+    if (!product) return;
     setQty((current) => ({
       ...current,
-      [id]: Math.max(0, (current[id] ?? 0) + amount),
+      [id]: stepQuantity(current[id] ?? 0, direction, product.minQuantity),
     }));
+  };
 
   const nextDetails = (e: FormEvent) => {
     e.preventDefault();
@@ -80,7 +89,7 @@ function OrdersPageContent() {
 
   const reset = () => {
     setQty(Object.fromEntries(products.map((p) => [p.id, 0])));
-    setDetails({ name: "", email: "", phone: "", pickup: "" });
+    setDetails({ name: "", email: "", phone: "", address: "", deliveryTime: "" });
     setStep("order");
   };
 
@@ -88,7 +97,7 @@ function OrdersPageContent() {
     <div className="page-shell orders-page">
       <header className="order-header">
         <div>
-          <p className="eyebrow">Pickup order</p>
+          <p className="eyebrow">Home delivery order</p>
           <h1>{step === "receipt" ? "Made fresh." : "Build your cup run."}</h1>
         </div>
         {step !== "receipt" && (
@@ -119,13 +128,28 @@ function OrdersPageContent() {
                 <div>
                   <h2>{p.name}</h2>
                   <p>{formatPrice(p.price)}</p>
+                  {p.minQuantity > 1 && (
+                    <small className="min-qty-note">
+                      Min. {p.minQuantity} cups
+                    </small>
+                  )}
                 </div>
+                {p.isCustom && (
+                  <ul className="mini-checklist" aria-label="Choose up to five fruits">
+                    {p.checklist.map((item) => (
+                      <li key={item}>
+                        <Check aria-hidden="true" />
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <div className="stepper">
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => update(p.id, -1)}
-                    aria-label={`Remove one ${p.name}`}
+                    aria-label={`Remove ${p.name}`}
                   >
                     <Minus />
                   </Button>
@@ -134,7 +158,7 @@ function OrdersPageContent() {
                     variant="ghost"
                     size="icon"
                     onClick={() => update(p.id, 1)}
-                    aria-label={`Add one ${p.name}`}
+                    aria-label={`Add ${p.name}`}
                   >
                     <Plus />
                   </Button>
@@ -142,11 +166,19 @@ function OrdersPageContent() {
               </article>
             ))}
           </div>
+
+          {!minimumMet && (
+            <p className="delivery-warning">
+              Every order needs at least {MIN_CUPS_PER_ORDER} cups total for
+              home delivery — you have {totalCups} so far.
+            </p>
+          )}
+
           <OrderSummary qty={qty} subtotal={subtotal} />
           <Button
             variant="order"
             size="lg"
-            disabled={!selected.length}
+            disabled={!canContinue}
             onClick={() => setStep("details")}
           >
             Continue to details
@@ -157,8 +189,8 @@ function OrdersPageContent() {
       {step === "details" && (
         <section className="order-details">
           <form onSubmit={nextDetails}>
-            <p className="eyebrow">Who&rsquo;s picking up?</p>
-            <h2>Your details</h2>
+            <p className="eyebrow">Where to?</p>
+            <h2>Your delivery details</h2>
             <label>
               Full name
               <Input
@@ -186,12 +218,20 @@ function OrdersPageContent() {
               />
             </label>
             <label>
-              Preferred pickup time
+              Delivery address
+              <Input
+                required
+                value={details.address}
+                onChange={(e) => setDetails({ ...details, address: e.target.value })}
+              />
+            </label>
+            <label>
+              Preferred delivery time
               <Input
                 required
                 type="datetime-local"
-                value={details.pickup}
-                onChange={(e) => setDetails({ ...details, pickup: e.target.value })}
+                value={details.deliveryTime}
+                onChange={(e) => setDetails({ ...details, deliveryTime: e.target.value })}
               />
             </label>
             <div className="form-actions">
@@ -215,7 +255,7 @@ function OrdersPageContent() {
             <OrderSummary qty={qty} subtotal={subtotal} />
             <dl>
               <div>
-                <dt>Pickup for</dt>
+                <dt>Deliver to</dt>
                 <dd>{details.name}</dd>
               </div>
               <div>
@@ -227,12 +267,16 @@ function OrdersPageContent() {
                 </dd>
               </div>
               <div>
-                <dt>Pickup</dt>
-                <dd>{new Date(details.pickup).toLocaleString()}</dd>
+                <dt>Address</dt>
+                <dd>{details.address}</dd>
+              </div>
+              <div>
+                <dt>Delivery</dt>
+                <dd>{new Date(details.deliveryTime).toLocaleString()}</dd>
               </div>
             </dl>
             <p className="payment-note">
-              Payment is collected at pickup for this demo order.
+              Payment is collected at delivery for this demo order.
             </p>
             <div className="form-actions">
               <Button variant="line" onClick={() => setStep("details")}>
@@ -253,7 +297,7 @@ function OrdersPageContent() {
           </div>
           <p className="eyebrow">Order confirmed</p>
           <h2>Thank you, {details.name.split(" ")[0]}.</h2>
-          <p>Your fruit is in good hands. Keep this receipt for pickup.</p>
+          <p>Your fruit is in good hands. Keep this receipt for delivery.</p>
           <div className="receipt-paper">
             <header>
               <ReceiptText />
@@ -280,8 +324,8 @@ function OrdersPageContent() {
               <strong>{formatPrice(subtotal + tax)}</strong>
             </div>
             <footer>
-              <span>Pickup</span>
-              <strong>{new Date(details.pickup).toLocaleString()}</strong>
+              <span>Delivery</span>
+              <strong>{new Date(details.deliveryTime).toLocaleString()}</strong>
             </footer>
           </div>
           <Button variant="line" onClick={reset}>
